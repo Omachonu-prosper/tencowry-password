@@ -1,15 +1,28 @@
 import os
 
-from flask import Flask
+from flask import Flask, jsonify, request
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from flask_cors import CORS
-from flask_mail import Mail
+from random import randint
+from flask_mail import Mail, Message
+from bson import ObjectId
+from datetime import datetime, timedelta
 
 
 app = Flask(__name__)
 load_dotenv()
 CORS()
+
+# Flask-Mail config
+app.config['MAIL_SERVER']='smtp.gmail.com'
+app.config['MAIL_PORT'] = 465
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER')
+app.config['MAIL_USE_TLS'] = False
+app.config['MAIL_USE_SSL'] = True
+mail = Mail(app)
 
 try:
     # If we are working in a production environment (deployed state)
@@ -31,9 +44,48 @@ db = client['test']
 users = db['users']
 
 
-@app.route('/user/password/generate-otp', strict_slashes=False)
+def generate_user_otp():
+    otp = randint(100000, 999999)
+    return str(otp)
+
+
+@app.route('/user/password/generate-otp', strict_slashes=False, methods=['POST'])
 def generate_otp():
-    return 'Under construction'
+    data = request.json
+    email = data.get('email', None)
+    user_id = data.get('user_id', None)
+    if email is None or user_id is None:
+        return jsonify({
+            'message': 'Incomplete payload - email and user_id are required',
+            'status': False
+        }), 400
+    
+    otp = generate_user_otp()
+    insert_otp = users.update_one(
+        {'_id': ObjectId(user_id)},
+        {'$set': {
+            'password_otp': {
+                'otp': otp,
+                'expires': datetime.now() + timedelta(minutes=30)
+            }
+        }}
+    )
+    if insert_otp.matched_count:
+        msg = Message(
+            subject="Password reset OTP",
+            body=f'{email} >> Your OTP to reset your password is {otp}',
+            recipients=[email])
+        mail.send(msg)
+    else:
+        return jsonify({
+            'message': 'User not found',
+            'status': False
+        }), 404
+    
+    return jsonify({
+        'message': f'Success: OTP generated and sent to mail ({email})',
+        'status': True
+    }), 200
 
 
 @app.route('/user/password/verify-otp', strict_slashes=False, methods=['POST'])
