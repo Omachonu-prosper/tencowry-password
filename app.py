@@ -8,6 +8,7 @@ from random import randint
 from flask_mail import Mail, Message
 from bson import ObjectId
 from datetime import datetime, timedelta
+from flask_bcrypt import generate_password_hash
 
 
 app = Flask(__name__)
@@ -45,11 +46,14 @@ users = db['users']
 
 
 def generate_user_otp():
+    """
+    Generates a 6 digit OTP that would be sent to the user
+    """
     otp = randint(100000, 999999)
     return str(otp)
 
 
-@app.route('/user/password/generate-otp', strict_slashes=False, methods=['POST'])
+@app.route('/user/password/otp/generate', strict_slashes=False, methods=['POST'])
 def generate_otp():
     data = request.json
     email = data.get('email', None)
@@ -61,6 +65,7 @@ def generate_otp():
         }), 400
     
     otp = generate_user_otp()
+    # Correct user verification based on the database structure should be done so as to fit the requirements
     insert_otp = users.update_one(
         {'_id': ObjectId(user_id)},
         {'$set': {
@@ -73,7 +78,7 @@ def generate_otp():
     if insert_otp.matched_count:
         msg = Message(
             subject="Password reset OTP",
-            body=f'{email} >> Your OTP to reset your password is {otp}',
+            body=f'{email} >> Your OTP to reset your password is {otp} \n The OTP will expire in 30 minutes',
             recipients=[email])
         mail.send(msg)
     else:
@@ -88,6 +93,55 @@ def generate_otp():
     }), 200
 
 
-@app.route('/user/password/verify-otp', strict_slashes=False, methods=['POST'])
+@app.route('/user/password/otp/verify', strict_slashes=False, methods=['POST'])
 def verify_otp():
-    return 'Under construction'
+    data = request.json
+    otp = data.get('otp', None)
+    user_id = data.get('user_id', None)
+    password = data.get('password', None)
+    if otp is None or user_id is None or password is None:
+        return jsonify({
+            'message': 'Incomplete payload - otp, password and user_id are required',
+            'status': False
+        }), 400
+    
+    user = users.find_one({'_id': ObjectId(user_id)}, {'_id': 0, 'password_otp': 1})
+    if not user:
+        return jsonify({
+            'message': 'User not found',
+            'status': False
+        }), 404
+
+    otp_details = user.get('password_otp')
+    if otp_details.get('otp') == otp:
+        now = datetime.now()
+        if now < otp_details.get('expires'):
+            # If the current time is still less than the expiry time of the otp 
+            # ie the 30 minutes hasnt elapsed
+            password = generate_password_hash(password)
+            
+            # This section should be edited to fit the database structure of users and their passwords
+            users.update_one(
+                {'_id': ObjectId(user_id)},
+                {'$set': {'password': password, 'password_otp': None}}
+            )
+            ####
+
+            return jsonify({
+                'message': 'Password updated successfully',
+                'status': True
+            }), 200
+        else:
+            return jsonify({
+                'message': 'expired OTP',
+                'status': False
+            }), 401
+    else:
+        return jsonify({
+            'message': 'Invalid OTP',
+            'status': False
+        }), 400
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
